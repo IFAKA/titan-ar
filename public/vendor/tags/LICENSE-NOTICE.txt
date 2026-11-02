@@ -1,0 +1,19 @@
+Third-party code in this directory
+===================================
+
+cv.js, aruco.js, svd.js, posit1.js
+  js-aruco2 (https://github.com/damianofalcioni/js-aruco2), MIT License.
+  Copyright (c) 2020 Damiano Falcioni
+  Copyright (c) 2011-2012 Juan Mellado (js-aruco, https://github.com/jcmellado/js-aruco)
+  The full MIT permission notice is kept at the top of each file. posit1.js
+  implements POSIT (Oberkampf, DeMenthon, Davis); svd.js follows
+  "Numerical Recipes in C".
+
+pose.js
+  From marker-pose (https://github.com/gisbi-kim/marker-pose), MIT License.
+  Copied unchanged (PoseMath: estimate/project/inverse/euler).
+
+roompose.js
+  Written for titan-ar. Pure fusion maths (tag map -> camera pose in world).
+
+Files were copied unmodified from the upstream sources listed above.

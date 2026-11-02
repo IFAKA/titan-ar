@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Titan AR</title>
+<style>
+  :root { --bg:#111; --fg:#eee; --muted:#9a9a9a; --accent:#4ade80; --a:#ef4444; --b:#3b82f6; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font: 16px/1.4 system-ui, sans-serif; }
+  #setup { padding: 16px; max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  p { color: var(--muted); margin: 6px 0 14px; }
+  fieldset { border:1px solid #333; border-radius:10px; margin: 0 0 12px; padding: 10px 12px; }
+  legend { padding: 0 6px; font-weight: 600; }
+  .row { display:flex; gap:8px; }
+  label { flex:1; font-size: 13px; color: var(--muted); }
+  input { width:100%; font-size:18px; padding:8px; border-radius:8px; border:1px solid #444; background:#1b1b1b; color:var(--fg); }
+  button { font-size:18px; padding:12px 16px; border-radius:10px; border:0; background:var(--accent); color:#000; font-weight:700; width:100%; }
+  button.secondary { background:#333; color:var(--fg); width:auto; font-size:15px; padding:8px 12px; }
+  #msg { margin-top:12px; color:#fbbf24; white-space: pre-wrap; }
+  #overlay { position:fixed; inset:0; pointer-events:none; display:none; }
+  #hud { pointer-events:auto; position:absolute; left:10px; right:10px; bottom:10px; background:rgba(0,0,0,.72); border-radius:12px; padding:8px 12px; font-size:15px; }
+  #stepbar { height:6px; background:#333; border-radius:3px; overflow:hidden; margin-bottom:6px; }
+  #stepbar div { height:100%; background:#4ade80; width:0; transition:width .3s; }
+  #hud .bar button.big { font-size:20px; padding:14px 10px; flex:1; }
+  #yes { background:#4ade80; color:#000; } #no { background:#ef4444; color:#000; }
+  #status { line-height: 1.3; }
+  .stepno { font-size:14px; letter-spacing:2px; color:#4ade80; font-weight:700; }
+  .steptitle { font-size:25px; font-weight:800; margin:0 0 2px; }
+  .stepbody { font-size:16px; color:#ddd; }
+  #cross { position:absolute; left:50%; top:50%; width:96px; height:96px; margin:-48px 0 0 -48px; border:6px solid #ef4444; border-radius:50%; display:none; pointer-events:none; box-shadow:0 0 0 3px #000, inset 0 0 0 3px #000; }
+  #cross.ok { border-color:#00ff66; }
+  #cross::after { content:''; position:absolute; left:50%; top:50%; width:10px; height:10px; margin:-5px; background:#fff; border-radius:50%; }
+  #mk { position:absolute; display:none; pointer-events:none; text-align:center; font-weight:800; font-size:20px; color:#fff; text-shadow:0 0 4px #000; transform:translate(-50%,-100%); }
+  #mk i { display:block; width:46px; height:46px; margin:0 auto; background:#ef4444; border:4px solid #fff; border-radius:8px; }
+  #toast { position:absolute; left:50%; bottom:12%; transform:translateX(-50%); background:#000c; color:#fff; padding:12px 18px; border-radius:12px; font-size:20px; display:none; pointer-events:none; }
+  #arrow { position:absolute; left:50%; top:30%; width:120px; height:120px; margin:-60px 0 0 -60px; display:none; pointer-events:none; filter:drop-shadow(0 0 6px #000); }
+  #arrowlbl { position:absolute; left:50%; top:30%; transform:translate(-50%,75px); color:#fff; font-weight:800; font-size:22px; text-shadow:0 0 5px #000; display:none; pointer-events:none; white-space:nowrap; }
+  #coach { margin-top: 8px; }
+  .chk { display:flex; align-items:center; gap:10px; font-size:16px; padding:3px 8px; border-radius:8px; margin:3px 0; background:#2a2a2a; }
+  .chk i { width:26px; height:26px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-style:normal; font-weight:900; background:#ef4444; color:#000; }
+  .chk.ok i { background:#4ade80; }
+  .chk.ok { background:#12331f; }
+  .chk.mid i { background:#fbbf24; }
+  #prog { height:10px; background:#333; border-radius:6px; overflow:hidden; margin-top:8px; }
+  #prog div { height:100%; width:0; background:#4ade80; transition: width .2s; }
+  #sway { font-size:34px; display:inline-block; animation: sway 2.2s ease-in-out infinite; transform-origin: 50% 100%; }
+  @keyframes sway { 0%,100% { transform: rotate(-25deg) translateX(-18px);} 50% { transform: rotate(25deg) translateX(18px);} }
+  #hud .bar { display:flex; gap:8px; margin-top:8px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+} }
+</script>
+</head>
+<body>
+<div id="setup">
+  <h1>Titan AR</h1>
+  <p>No cards needed. Press Start AR and the screen will tell you what to do.</p>
+  <details><summary>Advanced (leave alone for the first test)</summary>
+  <label style="display:block;margin:8px 0"><input type="checkbox" id="twopoint" style="width:auto"> use two points (needed later for real Minecraft)</label>
+  <details><summary>Minecraft numbers (leave as they are for the card test)</summary>
+
+  <fieldset>
+    <legend><span class="dot" style="background:var(--a)"></span>Point A (Minecraft XYZ)</legend>
+    <div class="row">
+      <label>x<input id="ax" inputmode="decimal" value="0"></label>
+      <label>y<input id="ay" inputmode="decimal" value="-60"></label>
+      <label>z<input id="az" inputmode="decimal" value="0"></label>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend><span class="dot" style="background:var(--b)"></span>Point B (Minecraft XZ)</legend>
+    <div class="row">
+      <label>x<input id="bx" inputmode="decimal" value="1"></label>
+      <label>z<input id="bz" inputmode="decimal" value="0"></label>
+    </div>
+  </fieldset>
+  <p>The defaults match <b>mock mode</b>: with the tape marks 1 m apart you get 4 blocks per metre, so players look about 50 cm tall.</p>
+  </details>
+  </details>
+  <button id="start">Start AR</button>
+  <div id="msg"></div>
+</div>
+
+<div id="overlay">
+  <div id="cross"></div><div id="mk"><i></i>CARD</div><div id="toast"></div>
+    <svg id="arrow" viewBox="0 0 100 100"><path d="M50 4 L88 46 L64 46 L64 96 L36 96 L36 46 L12 46 Z" fill="#ef4444" stroke="#fff" stroke-width="5" stroke-linejoin="round"/></svg><div id="arrowlbl"></div>
+  <div id="hud">
+    <div id="stepbar"><div></div></div>
+    <div id="status">Move the phone slowly over the floor…</div>
+    <div id="coachwrap"></div>
+    <div id="coach">
+      <div class="chk" id="c-aim"><i>✖</i><span>Aim down at the floor</span></div>
+      <div class="chk" id="c-slow"><i>✖</i><span>Move slowly</span></div>
+      <div class="chk" id="c-floor"><i>✖</i><span>Floor found</span></div>
+      <div id="prog"><div></div></div>
+      <div id="scanpct" style="text-align:center;font-size:15px;color:#aaa;margin-top:4px"></div>
+    </div>
+    <div class="bar">
+      <button class="big" id="yes" style="display:none">Yes, on the card</button>
+      <button class="big" id="no" style="display:none">No, it moved</button>
+      <button class="secondary" id="reset">Start over</button>
+      <button class="secondary" id="exit">Exit</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+const $ = (id) => document.getElementById(id);
+const msg = (t) => ($('msg').textContent = t);
+
+// ---------- environment checks ----------
+if (!window.isSecureContext) {
+  msg('This page is not a secure context, so AR is blocked.\nOn the phone open chrome://flags, search "insecure origins treated as secure", add ' + location.origin + ', set it to Enabled and relaunch Chrome.');
+} else if (!navigator.xr) {
+  msg('WebXR is not available in this browser. Use Chrome on Android.');
+} else {
+  navigator.xr.isSessionSupported('immersive-ar').then((ok) => { if (!ok) msg('This phone/browser says AR sessions are not supported. Make sure "Google Play Services for AR" is up to date.'); });
+}
+
+// ---------- three.js scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 2.5));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(1, 3, 2); scene.add(sun);
+
+const reticle = new THREE.Mesh(
+  new THREE.RingGeometry(0.10, 0.14, 32).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0x00ff66, side: THREE.DoubleSide, depthTest: false })
+);
+reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+window.__ret = reticle; window.__clicks = [];
+
+function markerCube(color) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshStandardMaterial({ color }));
+  m.visible = false; scene.add(m); return m;
+}
+const markA = markerCube(0xef4444), markB = markerCube(0x3b82f6);
+const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 1.2, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
+pole.position.y = 0.6; markA.add(pole); // tall red pole so the spot is easy to spot from across the room
+
+// ---------- calibration: Minecraft -> real-world transform ----------
+let mcA, mcB;          // Minecraft points {x,y,z}
+let realA = null, realB = null; // THREE.Vector3 on the real floor
+let T = null;          // { s, cos, sin }
+
+function readInputs() {
+  const n = (id) => parseFloat($(id).value.replace(',', '.'));
+  mcA = { x: n('ax'), y: n('ay'), z: n('az') };
+  mcB = { x: n('bx'), y: n('ay'), z: n('bz') };
+  if (![mcA.x, mcA.y, mcA.z, mcB.x, mcB.z].every(Number.isFinite)) throw new Error('Fill in all the numbers.');
+  if (Math.hypot(mcB.x - mcA.x, mcB.z - mcA.z) < 0.5) throw new Error('Points A and B must be at least 1 block apart in Minecraft.');
+}
+
+function computeTransform() {
+  const dmx = mcB.x - mcA.x, dmz = mcB.z - mcA.z;
+  const drx = realB.x - realA.x, drz = realB.z - realA.z;
+  const s = Math.hypot(dmx, dmz) / Math.hypot(drx, drz); // blocks per metre
+  const alpha = Math.atan2(drz, drx) - Math.atan2(dmz, dmx);
+  T = { s, cos: Math.cos(alpha), sin: Math.sin(alpha) };
+}
+
+// Both coordinate systems are right-handed with Y up, so it's rotate (around Y) + scale + shift.
+function mcToReal(p) {
+  const ux = (p.x - mcA.x) / T.s, uz = (p.z - mcA.z) / T.s;
+  return new THREE.Vector3(
+    realA.x + ux * T.cos - uz * T.sin,
+    realA.y + (p.y - mcA.y) / T.s,
+    realA.z + ux * T.sin + uz * T.cos
+  );
+}
+// Inverse: real-world point -> Minecraft coordinates.
+function realToMc(p) {
+  const dx = p.x - realA.x, dz = p.z - realA.z;
+  const ux = dx * T.cos + dz * T.sin, uz = -dx * T.sin + dz * T.cos;
+  return { x: mcA.x + ux * T.s, y: mcA.y + (p.y - realA.y) * T.s, z: mcA.z + uz * T.s };
+}
+function realDirToMcYaw(fx, fz) {
+  const mx = fx * T.cos + fz * T.sin, mz = -fx * T.sin + fz * T.cos;
+  return Math.atan2(-mx, mz) * 180 / Math.PI;
+}
+function mcYawToRealHeading(yawDeg) {
+  // Minecraft yaw 0 faces +z (south), 90 faces -x (west).
+  const r = (yawDeg * Math.PI) / 180;
+  const fx = -Math.sin(r), fz = Math.cos(r);
+  const rx = fx * T.cos - fz * T.sin, rz = fx * T.sin + fz * T.cos;
+  return Math.atan2(rx, rz); // rotation.y so the model's +z faces that way
+}
+
+// ---------- Minecraft-style avatar (built in block units, scaled by 1/s) ----------
+function nameTag(text) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(0, 0, 256, 64);
+  g.fillStyle = '#fff'; g.font = 'bold 36px system-ui'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, 128, 34);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+  sp.scale.set(1.2, 0.3, 1); sp.position.y = 2.35; return sp;
+}
+function makeAvatar(name) {
+  const g = new THREE.Group();
+  const box = (w, h, d, color, y, x = 0, z = 0) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color }));
+    m.position.set(x, y, z); g.add(m); return m;
+  };
+  box(0.24, 0.75, 0.25, 0x3b4cc0, 0.375, -0.125); // legs
+  box(0.24, 0.75, 0.25, 0x3b4cc0, 0.375, 0.125);
+  box(0.5, 0.75, 0.25, 0x22a6b3, 1.125);          // body
+  box(0.22, 0.7, 0.24, 0xd9a066, 1.125, -0.37);    // arms
+  box(0.22, 0.7, 0.24, 0xd9a066, 1.125, 0.37);
+  box(0.5, 0.5, 0.5, 0xd9a066, 1.75);             // head
+  box(0.08, 0.08, 0.02, 0xffffff, 1.8, -0.12, 0.255); // eyes on +z (front)
+  box(0.08, 0.08, 0.02, 0xffffff, 1.8, 0.12, 0.255);
+  g.add(nameTag(name));
+  g.userData = { target: new THREE.Vector3(), heading: 0, seen: 0 };
+  scene.add(g); return g;
+}
+
+const avatars = new Map();
+function onPlayers(players) {
+  if (!T) return;
+  const now = performance.now();
+  for (const p of players) {
+    let a = avatars.get(p.name);
+    if (!a) { a = makeAvatar(p.name); avatars.set(p.name, a); a.position.copy(mcToReal(p)); }
+    a.scale.setScalar(1 / T.s);
+    a.userData.target.copy(mcToReal(p));
+    a.userData.heading = mcYawToRealHeading(p.yaw);
+    a.userData.seen = now;
+    a.visible = true;
+  }
+}
+
+// ---------- websocket to the bridge ----------
+let wsState = 'connecting', ws = null;
+function sendWs(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+function connectWs() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  ws.onopen = () => (wsState = 'connected');
+  const mine = ws; ws.onclose = () => { wsState = 'disconnected, retrying'; setTimeout(connectWs, 1500); };
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === 'players') { lastPlayers = m.players; onPlayers(m.players); } };
+}
+let lastPlayers = [];
+connectWs();
+
+// ---------- AR session ----------
+let hitSource = null, step = 0, hitCount = 0, frames = 0; // 0: place A, 1: place B, 2: running
+let lastStatus = 0, runStart = 0, measuring = false, driftCm = null;
+let test = { stage: 'ask1', t0: 0, answers: [] };
+
+// ---------- live scan coach ----------
+const coach = { tracking: false, pitch: 0, speed: 0, sway: 0, lastPos: null, lastT: 0, recent: [] };
+window.__coach = coach; window.__log = [];
+function updateCoachFromPose(pose, t) {
+  if (!pose) { if (coach.tracking) sendWs({ type: 'log', ev: 'tracking-lost' }); coach.tracking = false; coach.lastPos = null; return; }
+  coach.tracking = true;
+  const o = pose.transform.orientation, pp = pose.transform.position;
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w));
+  coach.pitch = Math.asin(Math.max(-1, Math.min(1, -fwd.y))) * 180 / Math.PI; // degrees below the horizon
+  const pos = new THREE.Vector3(pp.x, pp.y, pp.z);
+  if (coach.lastPos && t > coach.lastT) {
+    const v = pos.distanceTo(coach.lastPos) / ((t - coach.lastT) / 1000);
+    coach.recent.push(v); if (coach.recent.length > 15) coach.recent.shift();
+    coach.speed = [...coach.recent].sort((x, y) => x - y)[coach.recent.length >> 1]; // median: ignores single-frame jumps
+    if (coach.speed > 0.03 && coach.speed < 1.8 && coach.pitch > 20) coach.sway = Math.min(1, coach.sway + (t - coach.lastT) / 8000);
+  }
+  coach.pos = pos; coach.quat = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+  coach.lastPos = pos; coach.lastT = t;
+  if (window.__log.length < 600) window.__log.push([Math.round(t), +coach.speed.toFixed(3), +coach.pitch.toFixed(0)]);
+}
+function setChk(id, state, text) {
+  const el = $(id); el.className = 'chk ' + state;
+  el.firstChild.textContent = state === 'ok' ? '✔' : state === 'mid' ? '!' : '✖';
+  el.lastChild.textContent = text;
+}
+function updateCoachUi() {
+  const scanning = step === 0;
+  $('coach').style.display = scanning ? 'block' : 'none';
+  if (!scanning) return;
+  if (!coach.tracking) setChk('c-aim', 'bad', 'Tracking lost: move back to where you were');
+  else if (coach.pitch < 20) setChk('c-aim', 'bad', 'Tilt the phone DOWN toward the floor');
+  else if (coach.pitch > 80) setChk('c-aim', 'mid', 'Tilt up a little: not straight down');
+  else setChk('c-aim', 'ok', 'Good angle: aimed at the floor');
+  if (coach.speed > 1.8) setChk('c-slow', 'bad', 'Too fast. Slow down');
+  else if (coach.speed < 0.03) setChk('c-slow', 'mid', 'Keep moving slowly left and right');
+  else setChk('c-slow', 'ok', 'Good speed. Keep swaying');
+  setChk('c-floor', reticle.visible ? 'ok' : 'bad', reticle.visible ? 'Floor found!' : 'Looking for the floor…');
+  $('prog').firstChild.style.width = Math.round((reticle.visible ? 1 : coach.sway) * 100) + '%';
+  $('scanpct').textContent = reticle.visible ? '' : `Scanning the floor: ${Math.round(coach.sway * 100)}%. Fills only while you sway slowly and aim down.`;
+}
+
+// ---------- guided wizard: one instruction at a time, spoken aloud ----------
+let lastPhase = '', lastSpoken = 0, halfSaid = false;
+function say(text) {
+  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.rate = 0.95; speechSynthesis.speak(u); } catch {}
+}
+function setStatus() {
+  const el = $('status');
+  const floor = reticle.visible;
+  let phase, num, title, body = '', speech;
+  if (step === 0 && !floor) {
+    phase = 'find'; num = 1; title = 'Point at the floor';
+    body = 'Hold the phone in front of you and look at the floor, about 2 steps ahead. Sway it slowly left and right until all three lines below are green.';
+    speech = 'Step one. Point the phone at the floor and sway it slowly left and right.';
+  } else if (step === 0) {
+    phase = 'touch'; num = 2; title = 'Touch the screen';
+    body = 'Floor found. Put a playing card on the floor under the green ring. Then touch the screen once, not on a button.';
+    speech = 'Step two. Floor found. Put a card on the floor under the green ring, then touch the screen once.';
+  } else if (step === 1) {
+    phase = 'second'; num = 2; title = 'Second point';
+    body = 'Move the green ring about 1 metre away from the first marker and touch the screen again.';
+    speech = 'Move the ring one metre away and touch the screen again.';
+  } else {
+    let dist = 99;
+    if (coach.pos) dist = Math.hypot(markA.position.x - coach.pos.x, markA.position.z - coach.pos.z);
+    const ask = (q) => { phase = 'ask-' + test.stage; title = 'Is the red box on the card?'; body = q; };
+    const done = (ans) => {};
+    if (test.stage === 'ask1') {
+      num = 3; ask('Stand still. Look at the card on the floor. The red CARD box should sit on top of it. Answer with a button.');
+      speech = 'Step three. Stand still and look at the card. Is the red box on the card?';
+    } else if (test.stage === 'away') {
+      num = 4; phase = 'away'; title = 'Walk 1.5 m from the card';
+      body = `You are ${dist.toFixed(1)} m from the card. Walk about 3 big steps away, then turn and look back at it.`;
+      speech = 'Step four. Walk three big steps away from the card, then turn and look back at it.';
+      if (dist >= 1.5) { test.stage = 'ask2'; }
+    } else if (test.stage === 'ask2') {
+      num = 4; ask(`You are ${dist.toFixed(1)} m away. Look at the card. Is the red CARD box on it? If the box is off screen, follow the arrow first.`);
+      speech = 'Look at the card. Is the red box on the card?';
+    } else if (test.stage === 'walk') {
+      if (!test.t0) test.t0 = performance.now();
+      const left = Math.max(0, 60 - (performance.now() - test.t0) / 1000);
+      num = 5; phase = 'walk'; title = `Walk around: ${Math.ceil(left)} s`;
+      body = 'Walk slowly around the room and look around as you go. After the timer ends you will come back to the card.';
+      speech = 'Step five. Walk around the room for one minute. I will tell you when to come back.';
+      if (left < 30 && !halfSaid) { halfSaid = true; say('Thirty seconds left.'); }
+      if (left <= 0) test.stage = 'back';
+    } else if (test.stage === 'back') {
+      num = 5; phase = 'back'; title = 'Walk back to the card';
+      body = `You are ${dist.toFixed(1)} m from the card. Get within 0.7 m, then look at it. Follow the red arrow.`;
+      speech = 'Time is up. Walk back to the card. Follow the red arrow.';
+      if (dist < 0.7) test.stage = 'ask3';
+    } else if (test.stage === 'ask3') {
+      num = 5; ask('Look at the card. Is the red CARD box on it?');
+      speech = 'Look at the card. Is the red box on the card?';
+    } else {
+      phase = 'result'; num = 6;
+      const A = test.answers, names = ['Standing still', '1.5 m away', 'After the 1 minute walk'];
+      const bad = A.filter((x) => !x.yes).length;
+      title = bad === 0 ? 'PASS: tracking held' : `Tracking slipped (${bad} of 3)`;
+      body = A.map((x, i) => `${x.yes ? '✔' : '✖'} ${names[i]}`).join('<br>') + '<br><small>Tell Claude this result. Press Start over to repeat.</small>';
+      speech = bad === 0 ? 'Done. The red box stayed on the card. Pass.' : 'Done. The red box moved off the card. Tell Claude.';
+    }
+  }
+  window.__test = test;
+  const askNow = phase.startsWith('ask-');
+  $('yes').style.display = $('no').style.display = askNow ? 'block' : 'none';
+  $('stepbar').firstChild.style.width = (num / 6 * 100) + '%';
+  if (phase !== lastPhase) { lastPhase = phase; halfSaid = false; if (phase !== 'walk') halfSaid = false; say(speech); }
+  el.innerHTML = `<div class="stepno">STEP ${num} OF 6</div><div class="steptitle">${title}</div><div class="stepbody">${body}</div>`;
+  $('coachwrap').dataset.phase = phase;
+}
+
+function toast(t) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; setTimeout(() => { e.style.display = 'none'; }, 1500); }
+const _v = new THREE.Vector3();
+// Screen-space markers (plain HTML), so they show even if WebGL drawing fails.
+function updateScreenMarkers() {
+  const cross = $('cross');
+  const aiming = step < 2 || measuring;
+  cross.style.display = aiming ? 'block' : 'none';
+  cross.className = reticle.visible ? 'ok' : '';
+  const mk = $('mk'), arrow = $('arrow'), lbl = $('arrowlbl');
+  if (step < 2 || !markA.visible || test.stage === 'result') { mk.style.display = arrow.style.display = lbl.style.display = 'none'; return; }
+  const cam = renderer.xr.getCamera();
+  _v.copy(markA.position).project(cam.cameras?.[0] || cam);
+  const behind = _v.z > 1;
+  const inView = !behind && Math.abs(_v.x) < 0.95 && Math.abs(_v.y) < 0.95;
+  mk.style.display = inView ? 'block' : 'none';
+  mk.style.left = ((_v.x + 1) / 2 * innerWidth) + 'px';
+  mk.style.top = ((1 - _v.y) / 2 * innerHeight) + 'px';
+  // arrow: points toward where the card is on the screen; flipped when the card is behind the phone
+  const dx = behind ? -_v.x : _v.x, dy = behind ? -_v.y : _v.y;
+  const ang = Math.atan2(dx, dy) * 180 / Math.PI;
+  arrow.style.display = lbl.style.display = inView ? 'none' : 'block';
+  arrow.style.transform = `rotate(${ang}deg)`;
+  const d = coach.pos ? Math.hypot(markA.position.x - coach.pos.x, markA.position.z - coach.pos.z) : 0;
+  lbl.textContent = `CARD ${d.toFixed(1)} m` + (behind ? ' (behind you)' : '');
+}
+
+function resetCalibration() {
+  test = { stage: 'ask1', t0: 0, answers: [] };
+  step = 0; realA = realB = null; T = null;
+  markA.visible = markB.visible = false;
+  for (const a of avatars.values()) scene.remove(a);
+  avatars.clear();
+}
+
+$('start').addEventListener('click', async () => {
+  try { readInputs(); } catch (e) { msg(e.message); return; }
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: ['dom-overlay'],
+      domOverlay: { root: $('overlay') },
+    });
+    $('setup').style.display = 'none';
+    $('overlay').style.display = 'block';
+    renderer.xr.setSession(session);
+    const viewer = await session.requestReferenceSpace('viewer');
+    hitSource = await session.requestHitTestSource({ space: viewer });
+    resetCalibration();
+
+    session.addEventListener('select', () => {
+      if (!reticle.visible) return;
+      const p = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+      if (step === 2 && measuring) { driftCm = Math.hypot(p.x - realA.x, p.z - realA.z) * 100; measuring = false; return; }
+      if (step === 0) {
+        sendWs({ type: 'log', ev: 'markA', p: [p.x, p.y, p.z], cam: coach.pos && [coach.pos.x, coach.pos.y, coach.pos.z] });
+        realA = p; markA.position.copy(p).add(new THREE.Vector3(0, 0.05, 0)); markA.visible = true;
+        if ($('twopoint').checked) step = 1;
+        else { // one-tap test: B is simply 1 m along the real x axis from A
+          realB = p.clone().add(new THREE.Vector3(1, 0, 0)); markB.position.copy(realB).add(new THREE.Vector3(0, 0.05, 0)); markB.visible = true;
+          computeTransform(); step = 2; onPlayers(lastPlayers);
+        }
+      }
+      else if (step === 1) {
+        if (p.distanceTo(realA) < 0.2) { $('status').textContent = 'Too close to A. Put mark B further away.'; return; }
+        realB = p; markB.position.copy(p).add(new THREE.Vector3(0, 0.05, 0)); markB.visible = true;
+        computeTransform(); step = 2; onPlayers(lastPlayers);
+      }
+    });
+    session.addEventListener('end', () => { hitSource = null; $('overlay').style.display = 'none'; $('setup').style.display = 'block'; });
+  } catch (e) {
+    msg('Could not start AR: ' + e.message);
+  }
+});
+// Taps on HUD buttons must not count as "place a mark".
+function answer(yes) {
+  const dist = coach.pos ? Math.hypot(markA.position.x - coach.pos.x, markA.position.z - coach.pos.z) : -1;
+  test.answers.push({ yes, stage: test.stage, dist: +dist.toFixed(2), t: Math.round(performance.now()) });
+  sendWs({ type: 'log', ev: 'answer', yes, stage: test.stage, dist, mark: markA.position.toArray(), cam: coach.pos && coach.pos.toArray() });
+  toast(yes ? 'Saved: on the card' : 'Saved: it moved');
+  test.stage = { ask1: 'away', ask2: 'walk', ask3: 'result' }[test.stage] || test.stage;
+  lastPhase = '';
+}
+$('yes').addEventListener('click', () => answer(true));
+$('no').addEventListener('click', () => answer(false));
+for (const id of ['reset', 'exit']) $(id).addEventListener('click', () => window.__clicks.push(id));
+for (const id of ['yes', 'no', 'reset', 'exit']) $(id).addEventListener('beforexrselect', (e) => e.preventDefault());
+$('reset').addEventListener('click', () => { toast('Starting over'); runStart = 0; measuring = false; driftCm = null; resetCalibration(); });
+$('exit').addEventListener('click', () => renderer.xr.getSession()?.end());
+
+// ---------- render loop ----------
+renderer.setAnimationLoop((t, frame) => {
+  if (frame && hitSource) {
+    const hits = frame.getHitTestResults(hitSource);
+    frames++; if (hits.length) hitCount++;
+    window.__dbg = { frames, hitCount, hitsNow: hits.length, step };
+    const ref = renderer.xr.getReferenceSpace();
+    updateCoachFromPose(frame.getViewerPose(ref), t);
+    if (hits.length && (step < 2 || measuring)) {
+      reticle.visible = true;
+      reticle.matrix.fromArray(hits[0].getPose(ref).transform.matrix);
+    } else reticle.visible = false;
+  }
+  const now = performance.now();
+  for (const a of avatars.values()) {
+    a.position.lerp(a.userData.target, 0.3);              // smooth between 10 Hz updates
+    let d = a.userData.heading - a.rotation.y;            // shortest turn
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    a.rotation.y += d * 0.3;
+    if (now - a.userData.seen > 2000) a.visible = false;  // player left
+  }
+  if (renderer.xr.isPresenting && coach.tracking && coach.quat && step === 2 && T && now - (window.__lastPose || 0) > 100) {
+    window.__lastPose = now;
+    const m = realToMc(coach.pos);
+    const f = new THREE.Vector3(0, 0, -1).applyQuaternion(coach.quat);
+    sendWs({ type: 'pose', x: m.x, y: m.y, z: m.z, yaw: realDirToMcYaw(f.x, f.z), pitch: -Math.asin(Math.max(-1, Math.min(1, f.y))) * 180 / Math.PI });
+  }
+  if (renderer.xr.isPresenting && coach.pos && now - (window.__lastTick || 0) > 1000) {
+    window.__lastTick = now;
+    sendWs({ type: 'log', ev: 'tick', step, stage: test.stage, cam: coach.pos.toArray(), mark: markA.visible ? markA.position.toArray() : null, speed: coach.speed, tracking: coach.tracking });
+  }
+  if (renderer.xr.isPresenting && now - lastStatus > 200) { setStatus(); updateCoachUi(); lastStatus = now;
+  }
+  if (renderer.xr.isPresenting) {
+    try { updateScreenMarkers(); } catch (e) { window.__mkerr = String(e); } }
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>titan-ar tag sheets (print)</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#eee;font:14px/1.4 ui-monospace,Menlo,monospace;color:#111}
+  #panel{padding:12px;background:#222;color:#fff}
+  #panel label{margin-right:14px}
+  #panel input,#panel select{font:inherit;padding:4px}
+  #panel p{margin:8px 0 0;color:#ffd479;max-width:60em}
+  .sheet{width:var(--pw);height:var(--ph);background:#fff;margin:12px auto;position:relative;page-break-after:always;break-after:page;overflow:hidden}
+  .sheet svg{position:absolute;left:50%;top:var(--top);transform:translateX(-50%);display:block}
+  .cap{position:absolute;left:0;right:0;text-align:center;font-size:12pt}
+  .ruler{position:absolute;left:50%;transform:translateX(-50%);height:0;border-top:1.2mm solid #000;width:100mm}
+  .ruler:before,.ruler:after{content:"";position:absolute;top:-4mm;height:7mm;border-left:0.6mm solid #000}
+  .ruler:before{left:0}.ruler:after{right:0}
+  @media print{
+    body{background:#fff}
+    #panel{display:none}
+    .sheet{margin:0;box-shadow:none}
+  }
+</style>
+<style id="pagecss"></style>
+</head><body>
+<div id="panel">
+  <label>Paper <select id="paper"><option value="A4">A4 (210x297 mm)</option><option value="Letter">Letter (8.5x11 in)</option></select></label>
+  <label>Black square (mm) <input id="bs" type="number" min="40" max="190" value="150" style="width:5em"></label>
+  <label>First ID <input id="first" type="number" min="0" max="249" value="0" style="width:4em"></label>
+  <label>How many <input id="count" type="number" min="1" max="12" value="4" style="width:4em"></label>
+  <button onclick="window.print()">Print</button>
+  <p>Print at 100% (actual size, NOT "fit to page"). Use matte paper if you can. After printing, measure the 100 mm bar on each sheet with a ruler: it must be 100 mm. Then measure the black square and tell the size to the tag map.
+  Total sheet width = black square x 1.25 (it has a white border that must stay white); max black square for A4 is about 160 mm.</p>
+</div>
+<div id="sheets"></div>
+<script src="vendor/tags/cv.js"></script>
+<script src="vendor/tags/aruco.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const dict = new AR.Dictionary("ARUCO_MIP_36h12");
+const PAPER = { A4: [210, 297], Letter: [215.9, 279.4] };
+function render() {
+  const [pw, ph] = PAPER[$("paper").value];
+  const bs = Math.min(190, Math.max(40, Number($("bs").value) || 150));
+  const total = bs * 10 / 8; // 8 black cells + 1 white cell border on each side
+  const first = Math.max(0, Math.min(249, Math.round(Number($("first").value) || 0)));
+  const count = Math.max(1, Math.min(12, Math.round(Number($("count").value) || 4)));
+  const top = Math.max(8, (ph - total) / 2 - 18);
+  document.documentElement.style.setProperty("--pw", pw + "mm");
+  document.documentElement.style.setProperty("--ph", ph + "mm");
+  document.documentElement.style.setProperty("--top", top + "mm");
+  $("pagecss").textContent = "@page{size:" + pw + "mm " + ph + "mm;margin:0}";
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const id = first + i; if (id > 249) break;
+    const svg = dict.generateSVG(id).replace("<svg ", '<svg shape-rendering="crispEdges" width="' + total + 'mm" height="' + total + 'mm" ');
+    const capTop = top + total + 6;
+    out.push('<div class="sheet">' + svg +
+      '<div class="cap" style="top:' + capTop + 'mm"><b>ID ' + id + '</b> &nbsp; black square = ' + bs + ' mm (ARUCO_MIP_36h12)</div>' +
+      '<div class="cap" style="top:' + (capTop + 9) + 'mm;font-size:10pt">Tape flat on a wall, matte, no folds. Keep the white border.</div>' +
+      '<div class="ruler" style="top:' + (capTop + 26) + 'mm"></div>' +
+      '<div class="cap" style="top:' + (capTop + 29) + 'mm;font-size:10pt">this bar must measure 100 mm</div></div>');
+  }
+  $("sheets").innerHTML = out.join("");
+}
+["paper", "bs", "first", "count"].forEach(id => $(id).oninput = render);
+render();
+</script>
+</body></html>

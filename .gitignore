@@ -1,0 +1,21 @@
+
+# added for publishing
+node_modules/
+.venv*/
+venv/
+.env
+.env.*
+!.env.example
+.next/
+dist/
+build/
+out/
+target/
+.open-next/
+.wrangler/
+*.log
+.DS_Store
+mcserver/
+logs/
+tmp/
+test-results/

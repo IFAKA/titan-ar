@@ -1,0 +1,11 @@
+{
+  "name": "titan-ar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "See Minecraft players in your real house through your phone (WebXR AR). No dependencies.",
+  "type": "module",
+  "scripts": {
+    "mock": "node server.js --mock",
+    "start": "node server.js"
+  }
+}

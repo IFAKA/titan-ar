@@ -1,0 +1,343 @@
+<!doctype html>
+<!--
+  titan-ar tag localisation TEST (phone browser). Open http://localhost:8080/tagtest.html (adb reverse tcp:8080 tcp:8080).
+
+  WHAT IT DOES: detects every ARUCO_MIP_36h12 tag in the camera image, estimates each tag's pose
+  (marker-pose PoseMath + a Gauss-Newton polish), and with the TAG MAP below computes the CAMERA pose in WORLD
+  coordinates. All visible tags are fused: positions averaged with weight 1/distance^2, orientations by quaternion average.
+
+  CONVENTION (keep it simple):
+    WORLD: X right, Y up, Z toward the viewer (right-handed), metres. Tag "pos" = centre of the tag in world metres.
+    A tag by default is VERTICAL (on a wall / a screen) and its face points to +Z (toward the viewer):
+       its right edge is world +X, its top edge is world +Y.
+    Optional per tag:  "yaw_deg" (turn facing direction about world Y, +90 = face points to +X),
+                       "pitch_deg" (about world X; -90 = lying flat on the floor, face up),
+                       "roll_deg" (spin inside its own plane), "size_mm" (black-square edge, overrides map size_mm).
+    Map JSON: {"size_mm":120,"tags":{"0":{"pos":[0,0,0],"yaw_deg":0},"1":{"pos":[0.3,0,0]}}}
+    size_mm = edge of the BLACK square (not the white border), measured with a ruler.
+  CAMERA OUTPUT: yaw 0 = looking toward -Z (at the tag wall), + = turn left; pitch + = looking up; roll + = right side down.
+  INTRINSICS: pinhole from the horizontal FOV field (default 65 deg, as in marker-pose); lens distortion is NOT corrected.
+  NEXT STEP (not built yet): marker-pose's calibration (calibration*.js, WASM OpenCV worker) to get real fx,fy,cx,cy + distortion.
+  FUSION MODES: "joint" = one 6-DOF camera pose fitted to all visible tag corners together (robust Huber loss, RoomPose.solveJoint);
+    "per-tag average" = one pose per tag, positions averaged (old method; noisier lateral error at 1 m+).
+  Code: vendor/tags/{cv,aruco,svd,posit1,pose}.js (js-aruco2 / marker-pose, MIT), vendor/tags/roompose.js (fusion maths).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>titan-ar tag test</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#101214;color:#e8e8e8;font:16px/1.35 ui-monospace,Menlo,monospace}
+  #wrap{max-width:720px;margin:0 auto;padding:6px}
+  canvas{width:auto;max-width:100%;max-height:38vh;background:#000;display:block;border-radius:6px;margin:0 auto}
+  #wrap{padding-bottom:90px}
+  .row{display:flex;gap:8px;margin:8px 0}
+  .row>*{flex:1}
+  button{min-height:56px;font:inherit;font-weight:bold;border:0;border-radius:8px;background:#2d6cdf;color:#fff;padding:6px 10px}
+  button.alt{background:#3b4048}
+  button.warn{background:#c0562a}
+  button:disabled{opacity:.4}
+  .big{font-size:26px;font-weight:bold;letter-spacing:.5px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .card{background:#1b1f24;border-radius:8px;padding:8px}
+  .lbl{font-size:12px;color:#8a95a1;text-transform:uppercase}
+  .ok{color:#7ee787}.bad{color:#ff7b72}.mid{color:#ffd479}
+  textarea{width:100%;height:150px;background:#0b0d0f;color:#cfe;border:1px solid #333;border-radius:6px;font:13px/1.3 ui-monospace,Menlo,monospace;padding:6px}
+  input{font:inherit;background:#0b0d0f;color:#fff;border:1px solid #333;border-radius:6px;padding:8px;width:6em}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  td,th{padding:3px 4px;text-align:right}th{color:#8a95a1;font-weight:normal;font-size:12px}td:first-child,th:first-child{text-align:left}
+  pre{white-space:pre-wrap;margin:0;font-size:14px}
+  details summary{padding:8px;cursor:pointer;color:#9ab}
+  .small{font-size:12px;color:#8a95a1}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="view" width="640" height="360"></canvas>
+  <div class="row">
+    <button id="start">Start camera</button>
+    <button id="freeze" class="warn" disabled>Freeze 5 s and report</button>
+  </div>
+  <div class="row">
+    <button id="rec10" class="alt" disabled>Record 10 s</button>
+    <label class="card small" style="display:flex;align-items:center;gap:6px">Mode
+      <select id="mode" style="font:inherit;background:#0b0d0f;color:#fff;border:1px solid #333;border-radius:6px;padding:6px"><option value="joint">joint (all corners)</option><option value="pertag">per-tag average</option></select></label>
+    <label class="card small" style="display:flex;align-items:center;gap:6px"><input id="smooth" type="checkbox" style="width:auto"> smooth (One-Euro)</label>
+  </div>
+  <div id="recstat" class="card small">recording: idle. Freeze and Record 10 s both save raw corner pixels to the server (POST /api/tagtest-log) for offline replay.</div>
+  <div class="card" style="margin-top:8px"><div class="lbl">freeze report (phone held still)</div><pre id="report" class="big" style="font-size:18px">none yet</pre></div>
+  <div id="status" class="card small" style="margin-top:8px">Not started. Hold the phone steady; tags are shown on the Mac at /tags.html.</div>
+
+  <div class="card" style="margin-top:8px">
+    <div class="lbl">camera position in WORLD (m)  [X right, Y up, Z toward viewer]</div>
+    <div class="grid3 big"><span id="px">-</span><span id="py">-</span><span id="pz">-</span></div>
+    <div class="lbl" style="margin-top:6px">yaw / pitch / roll (deg)</div>
+    <div class="grid3 big"><span id="yaw">-</span><span id="pitch">-</span><span id="roll">-</span></div>
+  </div>
+  <div class="card" style="margin-top:8px">
+    <div class="lbl">stability (last 2 s)</div>
+    <div class="grid3 big"><span id="std">-</span><span id="fps">-</span><span id="ids">-</span></div>
+    <div class="grid3 small"><span>std-dev mm</span><span>frames/s</span><span>visible ids</span></div>
+  </div>
+  <div class="card" style="margin-top:8px">
+    <div class="lbl">per tag</div>
+    <table><thead><tr><th>id</th><th>dist m</th><th>RMS px</th><th>off fused mm</th><th>weight</th></tr></thead><tbody id="tags"></tbody></table>
+  </div>
+  <div class="row"><button id="export" class="alt">Export JSON log</button><button id="copy" class="alt">Copy JSON</button></div>
+
+  <details open>
+    <summary>Settings</summary>
+    <div class="card">
+      <div class="row" style="align-items:center">
+        <label>Horizontal FOV (deg) <input id="fov" type="number" min="20" max="130" step="0.5" value="37"></label>
+        <label>Detect width (px) <input id="dw" type="number" min="320" max="1920" step="160" value="960"></label>
+      </div>
+      <div class="small">FOV is a guess until the camera is calibrated: a wrong FOV scales distances. Max RMS to accept a tag (px):
+        <input id="maxrms" type="number" min="0.5" max="20" step="0.5" value="4" style="width:4.5em"></div>
+      <div class="lbl" style="margin-top:8px">Tag map (JSON, saved in this browser)</div>
+      <textarea id="map" spellcheck="false"></textarea>
+      <div class="row"><button id="mapapply" class="alt">Apply map</button><button id="mapreset" class="alt">Reset default</button></div>
+      <div id="maperr" class="small"></div>
+    </div>
+  </details>
+  <details>
+    <summary>Convention</summary>
+    <div class="card small">World: X right, Y up, Z toward the viewer, metres. A tag stands vertical on a wall/screen, face toward +Z.
+      Optional per tag: yaw_deg (about Y), pitch_deg (about X; -90 = flat on floor, face up), roll_deg, size_mm.
+      size_mm = black square edge (ruler). Camera yaw 0 = looking toward -Z, + = turn left; pitch + = up; roll + = right side down.
+      Lens distortion is not corrected (calibration is the next step).</div>
+  </details>
+</div>
+
+<script src="vendor/tags/cv.js"></script>
+<script src="vendor/tags/aruco.js"></script>
+<script src="vendor/tags/svd.js"></script>
+<script src="vendor/tags/posit1.js"></script>
+<script src="vendor/tags/pose.js"></script>
+<script src="vendor/tags/roompose.js"></script>
+<video id="video" playsinline muted style="display:none"></video>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const canvas = $("view"), ctx = canvas.getContext("2d", { willReadFrequently: true });
+const detector = new AR.Detector({ dictionaryName: "ARUCO_MIP_36h12", maxHammingDistance: 2 });
+const LS = "titan-tagtest2-";
+const store = (k, v) => { try { localStorage.setItem(LS + k, v); } catch (e) {} };
+const load = (k, d) => { try { const v = localStorage.getItem(LS + k); return v === null ? d : v; } catch (e) { return d; } };
+const DEFAULT_MAP = '{\n  "size_mm": 62,\n  "tags": {\n    "0": {"pos": [0, 0, 0], "yaw_deg": 0},\n    "1": {"pos": [0.1445, 0, 0]},\n    "2": {"pos": [0, -0.089, 0]},\n    "3": {"pos": [0.1445, -0.089, 0]}\n  }\n}';
+
+let map = null, stream = null, running = false, stopFlag = false;
+let recent = [];          // {t, pos} for the 2 s stability window
+let frameTimes = [];      // processed-frame timestamps for fps
+let log = [];             // compact samples [t_ms, x, y, z, yaw, pitch, roll, nTags]
+let reports = [];
+let freezing = null;      // {t0, samples, frames, fixes, ids:Set, yaws..}
+let lastFix = null;
+let recorders = [];       // active recordings {label, t0, dur, frames:[{t, tags:{id:[[x,y]x4]}}], onDone}
+let oe = null;            // One-Euro filter state
+// One-Euro filter (Casiez 2012) on position; mincutoff 1.0 Hz, beta 0.05 (per mm/s scaled in metres), dcutoff 1 Hz
+function oneEuro(pos, t) {
+  const alpha = (fc, dt) => { const tau = 1 / (2 * Math.PI * fc); return 1 / (1 + tau / dt); };
+  if (!oe || t - oe.t > 1000) { oe = { t, x: pos.slice(), dx: [0, 0, 0] }; return pos; }
+  const dt = Math.max((t - oe.t) / 1000, 1e-3), out = [];
+  for (let i = 0; i < 3; i++) {
+    const d = (pos[i] - oe.x[i]) / dt, ad = alpha(1, dt);
+    oe.dx[i] = ad * d + (1 - ad) * oe.dx[i];
+    const fc = 1.0 + 20 * Math.abs(oe.dx[i]); // metres/s -> cutoff Hz
+    const a = alpha(fc, dt); out.push(a * pos[i] + (1 - a) * oe.x[i]);
+  }
+  oe.t = t; oe.x = out; return out.slice();
+}
+
+// ---------- settings / map ----------
+$("map").value = load("map", DEFAULT_MAP); $("fov").value = load("fov", "37"); $("mode").value = load("mode", "joint"); $("smooth").checked = load("smooth", "0") === "1"; $("dw").value = load("dw", "960"); $("maxrms").value = load("maxrms", "4");
+function applyMap() {
+  try { map = RoomPose.parseMap($("map").value); $("maperr").textContent = "map ok: tags " + Object.keys(map.tags).join(", "); $("maperr").className = "small ok"; store("map", $("map").value); return true; }
+  catch (e) { map = null; $("maperr").textContent = "map error: " + e.message; $("maperr").className = "small bad"; return false; }
+}
+$("mapapply").onclick = applyMap;
+$("mapreset").onclick = () => { $("map").value = DEFAULT_MAP; applyMap(); };
+$("map").oninput = applyMap;
+$("mode").onchange = () => store("mode", $("mode").value); $("smooth").onchange = () => { store("smooth", $("smooth").checked ? "1" : "0"); oe = null; };
+["fov", "dw", "maxrms"].forEach(id => $(id).oninput = () => store(id, $(id).value));
+applyMap();
+
+const fmt = (v, d = 3) => (v >= 0 ? " " : "") + v.toFixed(d);
+function setStatus(text, cls = "") { $("status").textContent = text; $("status").className = "card small " + cls; }
+
+// ---------- camera ----------
+$("start").onclick = async () => {
+  if (running) { stopFlag = true; return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setStatus("No getUserMedia: open via http://localhost:8080 (adb reverse) or https.", "bad"); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    const v = $("video"); v.srcObject = stream; await v.play();
+    try { if (navigator.wakeLock) navigator.wakeLock.request("screen").catch(() => {}); } catch (e) {}
+    running = true; stopFlag = false; $("start").textContent = "Stop camera"; $("freeze").disabled = false; $("rec10").disabled = false;
+    const s = stream.getVideoTracks()[0].getSettings();
+    setStatus("Camera " + v.videoWidth + "x" + v.videoHeight + (s.zoom ? " zoom " + s.zoom : "") + ". Looking for tags.");
+    loop();
+  } catch (e) { setStatus("Camera failed: " + e.name + " " + e.message, "bad"); }
+};
+function stopCamera() {
+  running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; $("video").srcObject = null;
+  $("start").textContent = "Start camera"; $("freeze").disabled = true; $("rec10").disabled = true; freezing = null; recorders = []; setStatus("Stopped.");
+}
+function loop() {
+  if (!running) return;
+  if (stopFlag) { stopCamera(); return; }
+  const v = $("video");
+  const next = () => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(loop); else requestAnimationFrame(loop); };
+  if (v.readyState >= 2 && v.videoWidth) {
+    try { processFrame(v); } catch (e) { setStatus("Frame error: " + e.message, "bad"); }
+  }
+  next();
+}
+
+// ---------- per-frame ----------
+function intrinsics(w, h) {
+  const fov = Number($("fov").value) || 65, f = w / (2 * Math.tan(fov * Math.PI / 360));
+  return { fx: f, fy: f, cx: w / 2, cy: h / 2 };
+}
+function outline(c, color, w = 3) { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); c.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.stroke(); }
+function label(text, p, color) { ctx.font = "bold " + Math.max(14, canvas.width / 40) + "px monospace"; ctx.lineWidth = 4; ctx.strokeStyle = "#000"; ctx.strokeText(text, p.x, p.y); ctx.fillStyle = color; ctx.fillText(text, p.x, p.y); }
+
+function processFrame(v) {
+  const now = performance.now();
+  const dw = Math.min(Number($("dw").value) || 1280, v.videoWidth), scale = dw / v.videoWidth;
+  const W = Math.round(v.videoWidth * scale), H = Math.round(v.videoHeight * scale);
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  ctx.drawImage(v, 0, 0, W, H);
+  const image = ctx.getImageData(0, 0, W, H), K = intrinsics(W, H), maxRms = Number($("maxrms").value) || 4;
+  const markers = detector.detect(image);
+  frameTimes.push(now); while (frameTimes.length && now - frameTimes[0] > 1000) frameTimes.shift();
+
+  const obs = [], jobs = [], seenIds = [], rows = [];
+  const best = new Map();
+  for (const m of markers) { if (!best.has(m.id)) best.set(m.id, m); }   // detector can repeat an id
+  for (const m of best.values()) {
+    const tag = map && map.tags[m.id];
+    if (!tag) { outline(m.corners, "#ffb454", 2); label("id " + m.id + " (not in map)", m.corners[0], "#ffb454"); continue; }
+    try {
+      const est = RoomPose.refinePose(m.corners, tag.size_m, K, PoseMath.estimate(m.corners, tag.size_m, K, POS.Posit));
+      if (est.error > maxRms) { outline(m.corners, "#ff7b72", 2); label("id " + m.id + " rms " + est.error.toFixed(1), m.corners[0], "#ff7b72"); continue; }
+      obs.push({ id: m.id, pose: est, error: est.error }); seenIds.push(m.id);
+      jobs.push({ id: m.id, corners: m.corners, pose: est, error: est.error });
+      outline(m.corners, "#7ee787");
+      const c = m.corners; ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(c[0].x, c[0].y, 5, 0, 7); ctx.fill();
+      label("id " + m.id + "  " + Math.hypot(...est.t).toFixed(2) + "m", { x: c[0].x, y: c[0].y - 8 }, "#7ee787");
+    } catch (e) { outline(m.corners, "#ff7b72", 2); label("id " + m.id + " pose fail", m.corners[0], "#ff7b72"); }
+  }
+
+  const t = now;
+  const avg = map ? RoomPose.fuse(obs, map) : null;
+  let fix = avg, jointInfo = null;
+  if (avg && $("mode").value === "joint") {
+    let j = null; try { j = RoomPose.solveJoint(jobs, map, K); } catch (e) { setStatus("joint solve error: " + e.message, "bad"); }
+    if (j) { jointInfo = j; fix = { ...avg, pos: j.pos, q: j.q, R_wc: j.R_wc, yaw: j.yaw, pitch: j.pitch, roll: j.roll, n: j.nTags }; }
+  }
+  if (fix && $("smooth").checked) fix = { ...fix, pos: oneEuro(fix.pos, t) };
+  if (recorders.length) {
+    const tags = {}; for (const m of best.values()) tags[m.id] = m.corners.map(c => [+c.x.toFixed(2), +c.y.toFixed(2)]);
+    const fr = { t: Math.round(t), tags };
+    for (const r of recorders) r.frames.push(fr);
+    recorders = recorders.filter(r => { const left = r.dur - (t - r.t0) / 1000; if (left > 0) { if (r.label === "rec10") $("recstat").textContent = "recording " + left.toFixed(1) + " s (" + r.frames.length + " frames)"; return true; } finishRecording(r, K, W, H); return false; });
+  }
+  if (fix) {
+    lastFix = fix;
+    recent.push({ t, pos: fix.pos }); while (recent.length && t - recent[0].t > 2000) recent.shift();
+    log.push([Math.round(t), ...fix.pos.map(x => +x.toFixed(5)), +fix.yaw.toFixed(3), +fix.pitch.toFixed(3), +fix.roll.toFixed(3), fix.n]);
+    if (log.length > 36000) log.shift();
+    $("px").textContent = fmt(fix.pos[0]); $("py").textContent = fmt(fix.pos[1]); $("pz").textContent = fmt(fix.pos[2]);
+    $("yaw").textContent = fmt(fix.yaw, 1); $("pitch").textContent = fmt(fix.pitch, 1); $("roll").textContent = fmt(fix.roll, 1);
+    $("tags").innerHTML = fix.perTag.map(p => "<tr><td>" + p.id + "</td><td>" + p.dist.toFixed(3) + "</td><td class='" + (p.error < 1.5 ? "ok" : p.error < 3 ? "mid" : "bad") + "'>" + p.error.toFixed(2) + "</td><td>" + p.dev_mm.toFixed(1) + "</td><td>" + p.weight.toFixed(2) + "</td></tr>").join("");
+  } else {
+    recent = recent.filter(r => t - r.t <= 2000);
+    ["px", "py", "pz", "yaw", "pitch", "roll"].forEach(id => $(id).textContent = "-");
+    $("tags").innerHTML = "";
+  }
+  const st = RoomPose.stats(recent.map(r => r.pos));
+  $("std").textContent = st && st.n > 2 ? st.std_mm.toFixed(1) : "-";
+  $("fps").textContent = frameTimes.length.toString();
+  $("ids").textContent = seenIds.length ? seenIds.join(",") : "none";
+  if (!freezing) setStatus(fix ? "Fix from " + fix.n + " tag(s)" + (jointInfo ? " [joint " + jointInfo.rmsPx.toFixed(2) + " px" + (jointInfo.weak ? ", WEAK: 1 tag" : "") + (jointInfo.droppedIds.length ? ", dropped " + jointInfo.droppedIds : "") + "]" : " [per-tag avg]") + " at " + W + "x" + H + ", f=" + K.fx.toFixed(0) + " px." : (markers.length ? "Tags seen but none usable (not in map or RMS too high)." : "No tags in view."), fix ? "ok" : "mid");
+
+  if (freezing) {
+    freezing.frames++;
+    if (fix) { freezing.fixes++; freezing.pos.push(fix.pos); freezing.ang.push([fix.yaw, fix.pitch, fix.roll]); fix.perTag.forEach(p => freezing.ids.set(p.id, (freezing.ids.get(p.id) || 0) + 1)); }
+    const left = 5 - (t - freezing.t0) / 1000;
+    setStatus("FROZEN: hold still... " + Math.max(0, left).toFixed(1) + " s  (" + freezing.fixes + " fixes)", "mid");
+    if (left <= 0) finishFreeze(t);
+  }
+}
+
+// ---------- freeze test ----------
+$("freeze").onclick = () => {
+  if (!running || freezing) return;
+  freezing = { t0: performance.now(), frames: 0, fixes: 0, pos: [], ang: [], ids: new Map() };
+  startRecording("freeze", 5);
+};
+$("rec10").onclick = () => { if (running && !recorders.some(r => r.label === "rec10")) startRecording("rec10", 10); };
+function finishFreeze(t) {
+  const f = freezing; freezing = null;
+  const dur = (t - f.t0) / 1000, st = RoomPose.stats(f.pos);
+  if (!st) { $("report").textContent = "No fixes in 5 s. Are tags visible and in the map?"; return; }
+  const angStd = [0, 1, 2].map(i => { const ref = f.ang[0][i], d = f.ang.map(a => RoomPose.angDiff(a[i], ref)); const m = d.reduce((s, x) => s + x, 0) / d.length; return Math.sqrt(d.reduce((s, x) => s + (x - m) ** 2, 0) / d.length); });
+  const rep = {
+    when: new Date().toISOString(), duration_s: +dur.toFixed(2), frames: f.frames, fixes: f.fixes, fps: +(f.frames / dur).toFixed(1),
+    mean_m: st.mean.map(x => +x.toFixed(4)), std_axis_mm: st.std_axis_mm.map(x => +x.toFixed(2)), std_mm: +st.std_mm.toFixed(2), max_jitter_mm: +st.max_jitter_mm.toFixed(2),
+    angle_std_deg: { yaw: +angStd[0].toFixed(3), pitch: +angStd[1].toFixed(3), roll: +angStd[2].toFixed(3) },
+    tag_frames: Object.fromEntries(f.ids), mode: $("mode").value, smoothed: $("smooth").checked, fov_deg: Number($("fov").value), detect_px: [canvas.width, canvas.height],
+  };
+  reports.push(rep);
+  $("report").textContent =
+    "mean  " + rep.mean_m.map(x => x.toFixed(3)).join("  ") + " m\n" +
+    "std   " + rep.std_mm.toFixed(1) + " mm  (x " + rep.std_axis_mm[0].toFixed(1) + " y " + rep.std_axis_mm[1].toFixed(1) + " z " + rep.std_axis_mm[2].toFixed(1) + ")\n" +
+    "max jitter " + rep.max_jitter_mm.toFixed(1) + " mm\n" +
+    "angle std yaw " + rep.angle_std_deg.yaw + " pitch " + rep.angle_std_deg.pitch + " roll " + rep.angle_std_deg.roll + " deg\n" +
+    "mode " + $("mode").value + (rep.smoothed ? " +smooth" : "") + "\n" + rep.fixes + "/" + rep.frames + " frames with fix, " + rep.fps + " fps, tags " + Object.keys(rep.tag_frames).join(",");
+  setStatus("Freeze report done.", "ok");
+}
+
+// ---------- raw-corner recording (for offline replay: tools/replay_tagtest.mjs) ----------
+function startRecording(label, dur) { recorders.push({ label, t0: performance.now(), dur, frames: [] }); if (label === "rec10") $("recstat").textContent = "recording 10 s..."; }
+let lastRecording = null;
+async function finishRecording(r, K, W, H) {
+  const rec = { format: "titan-tagtest-rec-v1", kind: r.label, saved_at: new Date().toISOString(), userAgent: navigator.userAgent,
+    K, image: [W, H], fov_deg: Number($("fov").value), mode: $("mode").value,
+    map: (() => { try { return JSON.parse($("map").value); } catch (e) { return null; } })(), frames: r.frames };
+  lastRecording = rec;
+  const el = $("recstat"); el.className = "card small";
+  el.textContent = r.label + ": " + r.frames.length + " frames recorded, saving...";
+  try {
+    const res = await fetch("/api/tagtest-log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rec) });
+    const j = await res.json().catch(() => ({}));
+    if (res.ok && j.ok) { el.textContent = "saved " + j.path.split("/").pop() + " (" + r.frames.length + " frames, " + r.label + ")"; el.className = "card small ok"; }
+    else throw new Error("HTTP " + res.status + (j.error ? " " + j.error : " (server needs a restart for /api/tagtest-log?)"));
+  } catch (e) { el.textContent = "NOT saved to server: " + e.message + ". Export JSON log / Copy JSON still work (they include this recording)."; el.className = "card small bad"; }
+}
+
+// ---------- export ----------
+function logJSON() {
+  return JSON.stringify({
+    format: "titan-tagtest-v1", exported: new Date().toISOString(), userAgent: navigator.userAgent,
+    settings: { fov_deg: Number($("fov").value), detect_width: Number($("dw").value), max_rms_px: Number($("maxrms").value), resolution: [canvas.width, canvas.height] },
+    map: (() => { try { return JSON.parse($("map").value); } catch (e) { return $("map").value; } })(),
+    freeze_reports: reports, last_recording: lastRecording, sample_columns: ["t_ms", "x_m", "y_m", "z_m", "yaw_deg", "pitch_deg", "roll_deg", "n_tags"], samples: log,
+  });
+}
+$("export").onclick = () => {
+  const url = URL.createObjectURL(new Blob([logJSON()], { type: "application/json" }));
+  const a = document.createElement("a"); a.href = url; a.download = "tagtest-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json"; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+};
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(logJSON()); setStatus("JSON copied (" + log.length + " samples).", "ok"); }
+  catch (e) { setStatus("Copy blocked: use Export JSON log.", "bad"); }
+};
+document.addEventListener("visibilitychange", () => { if (document.hidden && running) stopFlag = true; });
+</script>
+</body>
+</html>

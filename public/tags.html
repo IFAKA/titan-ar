@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>titan-ar tags (Mac screen)</title>
+<style>
+  html,body{margin:0;background:#fff;color:#111;font:15px/1.4 ui-monospace,Menlo,monospace}
+  #panel{position:fixed;top:0;left:0;right:0;background:#222;color:#eee;padding:8px 12px;z-index:5;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+  #panel label{display:flex;align-items:center;gap:6px}
+  #panel input,#panel select,#panel button{font:inherit;padding:4px 6px}
+  #panel input[type=number]{width:5.5em}
+  #note{flex-basis:100%;color:#ffd479;font-size:13px}
+  #stage{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#fff}
+  #stage.single svg{display:block}
+  #stage.grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:0}
+  .cell{display:flex;align-items:center;justify-content:center;min-width:0;min-height:0;position:relative}
+  .cell svg{max-width:100%;max-height:100%;display:block;image-rendering:pixelated}
+  .cell .lbl{position:absolute;top:2px;left:4px;font-size:12px;color:#888}
+  body.hidepanel #panel{display:none}
+</style>
+</head>
+<body>
+<div id="panel">
+  <label>Mode <select id="mode"><option value="single">single marker</option><option value="grid">grid (4 ids)</option></select></label>
+  <label><span id="idLabel">ID</span> <button id="prev">&lt;</button><input id="id" type="number" min="0" max="249" step="1" value="0"><button id="next">&gt;</button></label>
+  <label>Black square edge (mm) <input id="mm" type="number" min="1" step="0.5" value="120"></label>
+  <label>Scale <input id="scale" type="range" min="30" max="100" value="100"></label>
+  <button id="fs">fullscreen</button>
+  <button id="hide">hide controls (H)</button>
+  <span id="info"></span>
+  <div id="note">Lower the screen brightness (about 30-50%) and avoid reflections: a glossy bright screen washes out the black/white squares and the phone camera loses the corners.
+  Screen sizes differ: use a ruler to measure the BLACK square (not the white border) on the glass and type its edge in mm above. Put the same number in the tag map (size_mm) on the phone page. Dictionary: ARUCO_MIP_36h12, ids 0-249.</div>
+</div>
+<div id="stage" class="single"></div>
+
+<script src="vendor/tags/cv.js"></script>
+<script src="vendor/tags/aruco.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const dict = new AR.Dictionary("ARUCO_MIP_36h12");
+const LS = "titan-tags-";
+const store = (k, v) => { try { localStorage.setItem(LS + k, v); } catch (e) {} };
+const load = (k, d) => { try { const v = localStorage.getItem(LS + k); return v === null ? d : v; } catch (e) { return d; } };
+$("mm").value = load("mm", "120"); $("id").value = load("id", "0"); $("mode").value = load("mode", "single"); $("scale").value = load("scale", "100");
+
+function svg(id) { // 10x10-cell SVG: 1 white quiet-zone cell, 8 black cells (the "black square"), crisp edges
+  return dict.generateSVG(id).replace("<svg ", '<svg shape-rendering="crispEdges" preserveAspectRatio="xMidYMid meet" ');
+}
+function clampId() { let v = Math.round(Number($("id").value)); if (!Number.isFinite(v)) v = 0; v = Math.max(0, Math.min(249, v)); $("id").value = v; return v; }
+function render() {
+  const mode = $("mode").value, id = clampId(), mm = Number($("mm").value) || 0;
+  store("mode", mode); store("id", id); store("mm", $("mm").value); store("scale", $("scale").value);
+  const panelH = document.body.classList.contains("hidepanel") ? 0 : $("panel").offsetHeight;
+  const stage = $("stage"); stage.style.top = panelH + "px";
+  const s = Number($("scale").value) / 100;
+  stage.className = mode;
+  if (mode === "single") {
+    $("idLabel").textContent = "ID (0-249)";
+    stage.innerHTML = svg(id);
+    const el = stage.firstChild, side = Math.floor(Math.min(stage.clientWidth, stage.clientHeight) * s);
+    el.setAttribute("width", side); el.setAttribute("height", side);
+    $("info").textContent = "ID " + id + " | type the ruler-measured black square: " + (mm || "?") + " mm";
+  } else {
+    $("idLabel").textContent = "first ID";
+    const ids = [0, 1, 2, 3].map(k => (id + k) % 250);
+    stage.innerHTML = ids.map(i => '<div class="cell"><span class="lbl">id ' + i + '</span>' + svg(i) + '</div>').join("");
+    stage.querySelectorAll(".cell svg").forEach(el => { el.style.width = (s * 100) + "%"; el.style.height = (s * 100) + "%"; });
+    $("info").textContent = "IDs " + ids.join(", ") + " | black square must be measured with a ruler (mm)";
+  }
+}
+$("id").oninput = $("mm").oninput = $("scale").oninput = $("mode").onchange = render;
+$("prev").onclick = () => { $("id").value = (clampId() + 249) % 250; render(); };
+$("next").onclick = () => { $("id").value = (clampId() + 1) % 250; render(); };
+$("hide").onclick = () => { document.body.classList.add("hidepanel"); render(); };
+$("fs").onclick = () => { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); };
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "h" || e.key === "H") { document.body.classList.toggle("hidepanel"); render(); }
+  else if (e.key === "ArrowRight") $("next").click(); else if (e.key === "ArrowLeft") $("prev").click();
+});
+window.addEventListener("resize", render);
+render();
+</script>
+</body>
+</html>
